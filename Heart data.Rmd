@@ -1,0 +1,354 @@
+---
+output:
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, results = "show", fig.width=8, fig.height=4)
+options(scipen = 0, digits = 3)  # controls base R output
+# check if you have ISLR package, if not, install it
+if(!require('pacman')) {install.packages('pacman')}
+pacman::p_load(bestglm, glmnet, leaps, car, tidyverse, pROC, caret) # add the packages needed
+```
+
+\pagebreak
+
+
+We will continue to use the Framingham Data (`Framingham.dat`) so that you are already familiar with the data and the variables. All the results are obtained through training data. 
+
+Liz is a patient with the following readings: `AGE=50, GENDER=FEMALE, SBP=110, DBP=80, CHOL=180, FRW=105, CIG=0`. We would be interested to predict Liz's outcome in heart disease. 
+
+We have used a subset of the data and excluded anyone with a missing entry. 
+
+```{r data preparation, include=F}
+# Notice that we hide the code and the results here
+# Using `include=F` in the chunk declaration. 
+hd_data <- read.csv("Framingham.dat")
+str(hd_data) 
+
+### Renames, setting the variables with correct natures...
+names(hd_data)[1] <- "HD"
+hd_data$HD <- as.factor(hd_data$HD)
+hd_data$SEX <- as.factor(hd_data$SEX)
+str(hd_data)
+#tail(hd_data, 1)    # The last row is for prediction
+hd_data.new <- hd_data[1407,] # The female whose HD will be predicted.
+hd_data <- hd_data[-1407,]  # take out the last row 
+hd_data.f <- na.omit(hd_data)
+```
+
+We note that this dataset contains 311 people diagnosed with heart disease and 1095 without heart disease.
+```{r table heart disease, echo = F, comment = " "}
+# we use echo = F to avoid showing this R code
+# notice the usage of comment = " " here in the header
+table(hd_data$HD) # HD: 311 of "0" and 1095 "1" 
+```
+
+After a quick cleaning up here is a summary about the data:
+```{r data summary, comment="     "}
+# using the comment="     ", we get rid of the ## in the output.
+summary(hd_data.f)
+```
+
+
+
+### Identify important risk factors for `Heart.Disease.`
+
+We focus on understanding the elements of basic inference method in this part. Let us start a fit with just one factor, `SBP`, and call it `fit1`. We then add one variable to this at a time from among the rest of the variables. For example
+```{r, results="hide"}
+fit1 <- glm(HD~SBP, hd_data.f, family=binomial)
+summary(fit1)
+fit1.1 <- glm(HD~SBP + AGE, hd_data.f, family=binomial)
+summary(fit1.1)
+fit1.2 <- glm(HD~SBP + DBP, hd_data.f, family=binomial)
+summary(fit1.2)
+fit1.3 <- glm(HD~SBP + CHOL, hd_data.f, family=binomial)
+summary(fit1.3)
+fit1.4 <- glm(HD~SBP + FRW, hd_data.f, family=binomial)
+summary(fit1.4)
+fit1.5 <- glm(HD~SBP + CIG, hd_data.f, family=binomial)
+summary(fit1.5)
+fit1.6 <- glm(HD~SBP + SEX, hd_data.f, family=binomial)
+summary(fit1.6)
+#library(xtable)
+#print(xtable(summary(fit1.6)$coefficients), type = "html")
+```
+
+
+
+
+We will pick up the variable either with highest $|z|$ value, or smallest $p$ value and report the summary of our `fit2` Not
+```{r the most important addition, results='asis', comment="   "}
+## How to control the summary(fit2) output to cut some junk?
+## We could use packages: xtable or broom. 
+## Assume the fit2 is obtained by SBP + AGE
+library(xtable)
+options(xtable.comment = FALSE)
+fit2 <- glm(HD~SBP + SEX, hd_data.f, family=binomial)
+xtable(fit2)
+#summary(fit2)
+```
+
+**SEX would be the most important variable to add after SBP because it has the lowest p value**
+
+
+We perform both the Wald test and the Likelihood ratio tests (Chi-Squared) to see if the added variable is significant at the .01 level.
+
+**Wald test: The summary table below shows that Sex is significant at the 0.01 level because p value is lesser than 0.01 for SEX**
+```{r}
+summary(fit2)
+```
+
+**Likelihood ratio test: The anova table below shows that Sex is significant at the 0.01 level because Pr(>Chi) is less than 0.01**
+
+```{r}
+anova(fit1, fit2, test = "Chisq")
+```
+
+**The p value from the Wald test is 1.0e-10 while the p value from the likelihood ratio test is 3.8e-11. They are different.**
+
+
+
+
+###  Model building
+
+Start with all variables. Our goal is to fit a well-fitting model, that is still small and easy to interpret (parsimonious).
+
+i. Use backward selection method. O
+**We start with the full model and first kick out DBP because it has the largest p-value. We then kick out FRW and CIG in that order because they have the next highest p-values.**
+
+```{r, results="hide", echo=T}
+fit3 <- glm(HD~., hd_data.f, family=binomial)
+summary(fit2)
+fit3.1 <- update(fit3, .~. -DBP)
+summary(fit3.1)
+fit3.2 <- update(fit3.1, .~. -FRW)
+summary(fit3.2)
+fit3.3 <- update(fit3.2, .~. -CIG)
+```
+
+**We are left with the final model shown below**
+
+```{r}
+summary(fit3.3)
+```
+
+
+ii. Use AIC as the criterion for model selection.
+
+```{r}
+Xy <- model.matrix(HD ~.+0, hd_data.f)
+Xy <- data.frame(Xy, hd_data.f$HD)
+fit.all <- bestglm(Xy, family = binomial, method = "exhaustive", IC="AIC", nvmax = 10)
+fit.all$BestModel
+```
+
+**Final model summary**
+```{r}
+summary(glm(HD~AGE+SEX+SBP+CHOL+FRW+CIG, family=binomial, data=hd_data.f))
+fit.final <- glm(HD~AGE+SEX+SBP+CHOL+FRW+CIG, family=binomial, data=hd_data.f)
+```
+
+**Exhaustive search does not guarantee that the p-values of all the variables will be less than 0.05. The model returned is different from backward elimination. It has two more predictor variables - FRW and CIG**
+
+iv. What is the probability that Liz will have heart disease, according to our final model?
+
+```{r}
+fit.final.predict <- predict(fit.final, hd_data.new, type="response")
+fit.final.predict
+```
+
+**The probability that Liz will have a heart attack with the final model is `r fit.final.predict`**
+
+## Part 2 - Classification analysis
+
+### ROC/FDR
+
+```{r}
+set.seed(50)
+fit1 <- glm(HD~SBP, hd_data.f, family=binomial)
+summary(fit1)
+fit1.roc<- roc(hd_data.f$HD, fit1$fitted, plot=T, col="blue")
+plot(1-fit1.roc$specificities, fit1.roc$sensitivities, col="red", pch=16,
+xlab="False Positive",
+ylab="Sensitivity")
+fit1.roc.t <- data.frame(TP = fit1.roc$sensitivities, FP = 1-fit1.roc$specificities, TH = fit1.roc$thresholds)
+fit1.roc.choice <- fit1.roc.t %>% filter(FP < 0.1) %>% filter(TP == max(TP))
+```
+
+**The ROC curve is helpful when choosing the classifier. Ideally, the point with not high sensitivity (the proportion of correct positive classification) and high specificity (the proportion of correct negative classification) at the same time, which means the point that classifies both Y = 0 and Y = 1 correctly should be chosen. However, in general, we will not have a perfect classifier and need to strive a balance between the two. The above graph can be used to identify the classifier given the specificity and senstivity conditions. The classifier such that the False Positive rate is less than .1 and the True Positive rate is as high as possible is $\hat P(HD=1 \vert SBP) > `r fit1.roc.choice$TP`$**
+
+ii. Overlay two ROC curves: one from `fit1`, the other from `fit2`.
+
+```{r}
+fit2 <- glm(HD~SBP + SEX, hd_data.f, family=binomial)
+summary(fit2)
+fit1.roc<- roc(hd_data.f$HD, fit1$fitted, plot=F, col="blue")
+fit2.roc<- roc(hd_data.f$HD, fit2$fitted, plot=F, col="blue")
+plot(fit1.roc, col = 1, lty = 2, main = "ROC")
+plot(fit2.roc, col = 2, lty = 3, add = TRUE)
+```
+
+**The fit2 curve always contains the fit1 curve as with the addition of a variable in the model, the model becomes more accurate leading to an incraese in both the sensitivity and the specificty over the base model.The AUC of fit2 will always be larger than the AUC of fit1 as fit2 AUC also includes the AUC of fit1.** 
+
+
+iii.  Estimate the Positive Prediction Values and Negative Prediction Values for `fit1` and `fit2` using .5 as a threshold. Which model is more desirable if we prioritize the Positive Prediction values?
+
+**fit1**
+```{r}
+fit1.pred.5 <- ifelse(fit1$fitted > 1/2, "1", "0")
+cm.5 <- table(fit1.pred.5, hd_data.f$HD)
+cm.5
+positive.pred <- cm.5[2,2] / sum(cm.5[2,])
+positive.pred
+negative.pred <- cm.5[1,1] / sum(cm.5[1,])
+negative.pred
+```
+
+
+**fit2**
+```{r}
+fit2.pred.5 <- ifelse(fit2$fitted > 1/2, "1", "0")
+ca.5 <- table(fit2.pred.5, hd_data.f$HD)
+ca.5
+positive.pred <- ca.5[2,2] / sum(ca.5[2,])
+positive.pred
+negative.pred <- ca.5[1,1] / sum(ca.5[1,])
+negative.pred
+```
+
+**Fit2 is more desirable if we prioritize positive prediction values as the positive prediction value (a measure of the accuracy of the given predictions) is higher (0.472) for fit2 than for fit1 (0.45).**
+
+  
+**fit1**
+```{r}
+fit1.pred.ratio <- data.frame(thresholds = fit1.roc$thresholds, positive.pred = rep(0,length(fit1.roc$thresholds)), negative.pred = rep(0,length(fit1.roc$thresholds)))
+fit1.pred.ratio <- fit1.pred.ratio[-c(1,length(fit1.roc$thresholds)),]
+i <- 1
+for(th in fit1.pred.ratio$thresholds){
+  fit1.pred.cur <- ifelse(fit1$fitted > th, "1", "0")
+  cm.cur <- table(fit1.pred.cur, hd_data.f$HD)
+  fit1.pred.ratio$positive.pred[i] <- cm.cur[2,2] / sum(cm.cur[2,])
+  fit1.pred.ratio$negative.pred[i] <- cm.cur[1,1] / sum(cm.cur[1,])
+  i <- i+1
+}
+plot(fit1.pred.ratio$thresholds, fit1.pred.ratio$positive.pred, 
+     col="red", type="l", lwd=3, 
+     xlab="Threshold", 
+     ylab="Prediction Values",
+     xlim=c(0, 1),
+     ylim=c(0, 1))
+lines(fit1.pred.ratio$thresholds, fit1.pred.ratio$negative.pred, col="blue", lwd=3)
+legend("bottomright", legend=c("Positive Prediction Values", "Negative Prediction Values"),
+       lty=c(1,1), lwd=c(2,2), col=c("red", "blue"))
+title("Positive and Negative Prediction Values")
+```
+
+
+**fit2**
+```{r}
+fit2.pred.ratio <- data.frame(thresholds = fit2.roc$thresholds, positive.pred = rep(0,length(fit2.roc$thresholds)), negative.pred = rep(0,length(fit2.roc$thresholds)))
+fit2.pred.ratio <- fit2.pred.ratio[-c(1,length(fit2.roc$thresholds)),]
+i <- 1
+for(th in fit2.pred.ratio$thresholds){
+  fit2.pred.cur <- ifelse(fit2$fitted > th, "1", "0")
+  cm.cur <- table(fit2.pred.cur, hd_data.f$HD)
+  fit2.pred.ratio$positive.pred[i] <- cm.cur[2,2] / sum(cm.cur[2,])
+  fit2.pred.ratio$negative.pred[i] <- cm.cur[1,1] / sum(cm.cur[1,])
+  i <- i+1
+}
+plot(fit2.pred.ratio$thresholds, fit2.pred.ratio$positive.pred, 
+     col="red", type="l", lwd=3, 
+     xlab="Threshold", 
+     ylab="Prediction Values",
+     xlim=c(0, 1),
+     ylim=c(0, 1))
+lines(fit2.pred.ratio$thresholds, fit2.pred.ratio$negative.pred, col="blue", lwd=3)
+legend("bottomright", legend=c("Positive Prediction Values", "Negative Prediction Values"),
+       lty=c(1,1), lwd=c(2,2), col=c("red", "blue"))
+title("Positive and Negative Prediction Values")
+## Find package that does this, or iterate with thesholds from 
+
+```  
+  
+### Cost function/ Bayes Rule
+
+Bayes rules with risk ratio $\frac{a_{10}}{a_{01}}=10$ or $\frac{a_{10}}{a_{01}}=1$. Using our final model obtained from Part 1 to build a class of linear classifiers.
+
+
+i.  linear boundary for the Bayes classifier if the risk ratio of $a_{10}/a_{01}=10$.
+
+$$\widehat{HD}= 1 ~~~~ \text{if} ~~~~ \hat P(HD=1 \vert x) > \frac{0.1}{(1+0.1)}=0.09$$
+
+ii. Estimated weighted misclassification error for this given risk ratio?
+
+```{r,results=T}
+fit.final.pred.bayes <- as.factor(ifelse(fit.final$fitted > 0.1/1.1, "1", "0"))
+MCE.bayes <- (10*sum(fit.final.pred.bayes[hd_data.f$HD == "1"] != "1")
++ sum(fit.final.pred.bayes[hd_data.f$HD == "0"] != "0"))/length(hd_data.f$HD)
+MCE.bayes
+```
+
+
+
+iii.  How would we classify Liz under this classifier?
+
+```{r}
+fit.final.predict <- predict(fit.final, hd_data.new, type="response") 
+fit.final.predict > 0.1/1.1
+```
+**Liz would not be predicted to have HD**
+
+
+v. Using weighted misclassification error, and set $a_{10}/a_{01}=10$. How well does the Bayes rule classifier perform? 
+
+```{r}
+MCE.th <- data.frame(threshold = (1:1000)/1000, MCE = rep(0,1000))
+for(i in 1:1000){
+    fit.final.pred.bayes <- as.factor(ifelse(fit.final$fitted > i/1000, "1", "0"))
+    MCE.th$MCE[i] <- (10*sum(fit.final.pred.bayes[hd_data.f$HD == "1"] != "1")
+    + sum(fit.final.pred.bayes[hd_data.f$HD == "0"] != "0"))/length(hd_data.f$HD)
+}
+plot(MCE.th$threshold, MCE.th$MCE, 
+     col="red", type="l", lwd=3, 
+     xlab="Threshold", 
+     ylab="Weighted MCE")
+MCE.min <- MCE.th$threshold[MCE.th$MCE == min(MCE.th$MCE)]
+```
+**The threshold with the lowest MCE was $`r mean(MCE.min)`$.This is close to the Bayes rule classifier of $0.09$.**
+
+
+vi. Use weighted misclassification error, and set $a_{10}/a_{01}=1$. How well does the Bayes rule classifier perform? 
+
+```{r}
+MCE.th <- data.frame(threshold = (1:1000)/1000, MCE = rep(0,1000))
+for(i in 1:1000){
+    fit.final.pred.bayes <- as.factor(ifelse(fit.final$fitted > i/1000, "1", "0"))
+    MCE.th$MCE[i] <- (sum(fit.final.pred.bayes[hd_data.f$HD == "1"] != "1")
+    + sum(fit.final.pred.bayes[hd_data.f$HD == "0"] != "0"))/length(hd_data.f$HD)
+}
+plot(MCE.th$threshold, MCE.th$MCE, 
+     col="red", type="l", lwd=3, 
+     xlab="Threshold", 
+     ylab="Weighted MCE")
+MCE.min <- MCE.th$threshold[MCE.th$MCE == min(MCE.th$MCE)]
+```
+
+**The threshold with the lowest MCE was $`r mean(MCE.min)`$.This is close to the Bayes rule classifier of $0.5$.**
+
